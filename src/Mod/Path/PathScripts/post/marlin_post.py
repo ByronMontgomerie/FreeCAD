@@ -1,252 +1,160 @@
-# -*- coding: utf-8 -*-
-# *****************************************************************************
-# *                                                                           *
-# *   (c) sliptonic (shopinthewoods@gmail.com) 2014                           *
-# *   (c) Gauthier Briere - 2018, 2019                                        *
-# *   (c) Schildkroet - 2019-2020                                             *
-# *   (c) Gary L Hasson - 2020                                                *
-# *                                                                           *
-# *   This file is part of the FreeCAD CAx development system.                *
-# *                                                                           *
-# *   This program is free software; you can redistribute it and/or modify    *
-# *   it under the terms of the GNU Lesser General Public License (LGPL)      *
-# *   as published by the Free Software Foundation; either version 2 of       *
-# *   the License, or (at your option) any later version.                     *
-# *   for detail see the LICENCE text file.                                   *
-# *                                                                           *
-# *   FreeCAD is distributed in the hope that it will be useful,              *
-# *   but WITHOUT ANY WARRANTY; without even the implied warranty of          *
-# *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the           *
-# *   GNU Lesser General Public License for more details.                     *
-# *                                                                           *
-# *   You should have received a copy of the GNU Library General Public       *
-# *   License along with FreeCAD; if not, write to the Free Software          *
-# *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307    *
-# *   USA                                                                     *
-# *                                                                           *
-# *****************************************************************************
+#***************************************************************************
+#*   (c) sliptonic (shopinthewoods@gmail.com) 2014                        *
+#*                                                                         *
+#*   This file is part of the FreeCAD CAx development system.              *
+#*                                                                         *
+#*   This program is free software; you can redistribute it and/or modify  *
+#*   it under the terms of the GNU Lesser General Public License (LGPL)    *
+#*   as published by the Free Software Foundation; either version 2 of     *
+#*   the License, or (at your option) any later version.                   *
+#*   for detail see the LICENCE text file.                                 *
+#*                                                                         *
+#*   FreeCAD is distributed in the hope that it will be useful,            *
+#*   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
+#*   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
+#*   GNU Lesser General Public License for more details.                   *
+#*                                                                         *
+#*   You should have received a copy of the GNU Library General Public     *
+#*   License along with FreeCAD; if not, write to the Free Software        *
+#*   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  *
+#*   USA                                                                   *
+#*                                                                         *
+#***************************************************************************/
 
 
-from datetime import datetime
-import argparse
-import shlex
-import FreeCAD
-from FreeCAD import Units
-import PathScripts.PathUtil as PathUtil
-import PathScripts.PostUtils as PostUtils
+TOOLTIP='''
+Generate g-code from a Path that is compatible with the marlin controller.
 
-Revised = '2020-11-03'  # Revision date for this file.
-
-# *****************************************************************************
-# *   Due to the fundamentals of the FreeCAD pre-processor,                   *
-# *   this post processor can only operate in the following modes:            *
-# *   G90 Absolute positions                                                  *
-# *   G21 Metric units (mm)                                                   *
-# *   G17 XY plane (3 axis vertical milling only)                             *
-# *                                                                           *
-# *****************************************************************************
-
-
-TOOLTIP = '''
-Generate g-code from a Path that is compatible with the Marlin controller.
 import marlin_post
-marlin_post.export(object, "/path/to/file.nc")
+marlin_post.export(object,"/path/to/file.ncc")
 '''
 
-# *****************************************************************************
-# * Initial configuration, not changeable                                     *
-# *****************************************************************************
-MOTION_MODE = 'G90'             # G90 only, for absolute moves
-WORK_PLANE = 'G17'              # G17 only, XY plane, for vertical milling
-UNITS = 'G21'                   # G21 only, for metric
-UNIT_FORMAT = 'mm'
-UNIT_FEED_FORMAT = 'mm/s'
+import FreeCAD
+import PathScripts.PostUtils as PostUtils
+import argparse
+import datetime
+import shlex
+import traceback
 
-# *****************************************************************************
-# * Initial configuration, changeable via command line arguments              *
-# *****************************************************************************
-PRECISION = 3                   # Decimal places displayed for metric
-DRILL_RETRACT_MODE = 'G98'      # End of drill-cycle retractation type. G99
-# is the alternative.
-TRANSLATE_DRILL_CYCLES = True   # If true, G81, G82, and G83 are translated
-# into G0/G1 moves
-OUTPUT_TOOL_CHANGE = False      # Do not output M6 tool change (comment it)
-RETURN_TO = None                # None = No movement at end of program
-SPINDLE_WAIT = 3                # 0 == No waiting after M3 / M4
-MODAL = False                   # True: Commands are suppressed if they are
-# the same as the previous line
-LINENR = 100                    # Line number starting value
-LINEINCR = 10                   # Line number increment
-PRE_OPERATION = ''''''          # Pre operation text will be inserted before
-# every operation
-POST_OPERATION = ''''''         # Post operation text will be inserted after
-# every operation
-TOOL_CHANGE = ''''''            # Tool Change commands will be inserted
-# before a tool change
 
-# *****************************************************************************
-# * Initial gcode output options, changeable via command line arguments       *
-# *****************************************************************************
-OUTPUT_HEADER = True            # Output header in output gcode file
-OUTPUT_COMMENTS = True          # Comments in output gcode file
-OUTPUT_FINISH = False           # Include an operation finished comment
-OUTPUT_PATH = False             # Include a Path: comment
-OUTPUT_MARLIN_CONFIG = False    # Display expected #defines for Marlin config
-OUTPUT_LINE_NUMBERS = False     # Output line numbers in output gcode file
-OUTPUT_BCNC = False             # Add bCNC operation block headers in output
-# gcode file
-SHOW_EDITOR = True              # Display the resulting gcode file
+now = datetime.datetime.now()
 
-# *****************************************************************************
-# * Command line arguments                                                    *
-# *****************************************************************************
 parser = argparse.ArgumentParser(prog='marlin', add_help=False)
-parser.add_argument(
-    '--header',
-    action='store_true',
-    help='output headers (default)')
-parser.add_argument(
-    '--no-header',
-    action='store_true',
-    help='suppress header output')
-parser.add_argument(
-    '--comments',
-    action='store_true',
-    help='output comment (default)')
-parser.add_argument(
-    '--no-comments',
-    action='store_true',
-    help='suppress comment output')
-parser.add_argument(
-    '--finish-comments',
-    action='store_true',
-    help='output finish-comment')
-parser.add_argument(
-    '--no-finish-comments',
-    action='store_true',
-    help='suppress finish-comment output (default)')
-parser.add_argument(
-    '--path-comments',
-    action='store_true',
-    help='output path-comment')
-parser.add_argument(
-    '--no-path-comments',
-    action='store_true',
-    help='suppress path-comment output (default)')
-parser.add_argument(
-    '--marlin-config',
-    action='store_true',
-    help='output #defines for Marlin')
-parser.add_argument(
-    '--no-marlin-config',
-    action='store_true',
-    help='suppress output #defines for Marlin (default)')
-parser.add_argument(
-    '--line-numbers',
-    action='store_true',
-    help='prefix with line numbers')
-parser.add_argument(
-    '--no-line-numbers',
-    action='store_true',
-    help='do not prefix with line numbers (default)')
-parser.add_argument(
-    '--show-editor',
-    action='store_true',
-    help='pop up editor before writing output (default)')
-parser.add_argument(
-    '--no-show-editor',
-    action='store_true',
-    help='do not pop up editor before writing output')
-parser.add_argument(
-    '--precision',
-    default='3',
-    help='number of digits of precision, default=3')
-parser.add_argument(
-    '--translate_drill',
-    action='store_true',
-    help='translate drill cycles G81, G82, G83 into G0/G1 movements (default)')
-parser.add_argument(
-    '--no-translate_drill',
-    action='store_true',
-    help='do not translate drill cycles G81, G82, G83 into G0/G1 movements')
-parser.add_argument(
-    '--preamble',
-    help='set commands to be issued before the first command, default=""')
-parser.add_argument(
-    '--postamble',
-    help='set commands to be issued after the last command, default="M5"')
-parser.add_argument(
-    '--tool-change', action='store_true',
-    help='Insert M6 for all tool changes')
-parser.add_argument(
-    '--wait-for-spindle',
-    type=int,
-    default=3,
-    help='Wait for spindle to reach desired speed after M3 or M4, default=0')
-parser.add_argument(
-    '--return-to',
-    default='',
-    help='When done, move to, e.g. --return-to="3.175, 4.702, 50.915"')
-parser.add_argument(
-    '--bcnc',
-    action='store_true',
-    help='Add Job operations as bCNC block headers. \
-    Consider suppressing existing comments: Add argument --no-comments')
-parser.add_argument(
-    '--no-bcnc',
-    action='store_true',
-    help='suppress bCNC block header output (default)')
-TOOLTIP_ARGS = parser.format_help()
+parser.add_argument('--header', action='store_true', help='output headers (default)')
+parser.add_argument('--no-header', action='store_true', help='suppress header output')
+parser.add_argument('--comments', action='store_true', help='output comment (default)')
+parser.add_argument('--no-comments', action='store_true', help='suppress comment output')
+parser.add_argument('--line-numbers', action='store_true', help='prefix with line numbers')
+parser.add_argument('--no-line-numbers', action='store_true', help='don\'t prefix with line numbers (default)')
+parser.add_argument('--show-editor', action='store_true', help='pop up editor before writing output (default)')
+parser.add_argument('--no-show-editor', action='store_true', help='don\'t pop up editor before writing output')
+parser.add_argument('--precision', default='4', help='number of digits of precision, default=4')
+parser.add_argument('--preamble', help='set commands to be issued before the first command, default="G17\nG90"')
+parser.add_argument('--postamble', help='set commands to be issued after the last command, default="M05\nG17 G90\n; M2"')
+parser.add_argument('--tool-change', help='0 ... suppress all tool change commands\n1 ... insert M6 for all tool changes\n2 ... insert M6 for all tool changes except the initial tool')
+parser.add_argument('--centeroriginal', action='store_true', help='only Z is adjusted.')
+parser.add_argument('--centerorigin', action='store_true', help='center all xy coords around mid point, default is bottom left')
+parser.add_argument('--centeroriginx', action='store_true', help='center all x coords around mid point')
+parser.add_argument('--centeroriginy', action='store_true', help='center all y coords around mid point')
+parser.add_argument('--swapxy', action='store_true', help='swaps the X and Y values')
+parser.add_argument('--invertx', action='store_true', help='X values are swapped 180 degrees')
+parser.add_argument('--inverty', action='store_true', help='Y values are swapped 180 degrees')
+parser.add_argument('--offsetx',  help='X values are offset')
+parser.add_argument('--offsety', help='Y values are offset')
+parser.add_argument('--spindlecontrol', action='store_true', help='Allow M3 / M5 for Marlin compiled with spindle support')
+TOOLTIP_ARGS=parser.format_help()
 
-# *****************************************************************************
-# * Marlin 2.x:                                                               *
-# * Ignores commands that it does not implement.                              *
-# * Some machining-related commands may conflict with gcodes that Marlin      *
-# * has assigned to 3D printing commands.                                     *
-# * Therefore, check FreeCAD gcodes for conflicts with Marlin.                *
-# * Marlin 2.x ignores the ENTIRE COMMAND LINE if there is more than          *
-# * one command per line.                                                     *
-# *****************************************************************************
+#These globals set common customization preferences
+OUTPUT_COMMENTS = True
+OUTPUT_HEADER = True
+OUTPUT_LINE_NUMBERS = False
+OUTPUT_TOOL_CHANGE = False
+SHOW_EDITOR = True
+MODAL = False #if true commands are suppressed if the same as previous line.
+COMMAND_SPACE = " "
+LINENR = 100 #line number starting value
 
-# Default preamble text will appear at the beginning of the gcode output file.
-PREAMBLE = ''''''
+#These globals will be reflected in the Machine configuration of the project
+UNITS = "G21" #G21 for metric, G20 for us standard
+MACHINE_NAME = "MARLIN"
+CORNER_MIN = {'x':0, 'y':0, 'z':0 }
+CORNER_MAX = {'x':500, 'y':300, 'z':300 }
+PRECISION = 4
 
-# Default postamble text will appear following the last operation.
-POSTAMBLE = '''M5
+RAPID_MOVES = ['G0', 'G00']
+
+G0XY_FEEDRATE = 2000
+G0Z_UP_FEEDRATE = 200
+G0Z_DOWN_FEEDRATE = 150
+
+#Preamble text will appear at the Beginning of the GCODE output file.
+PREAMBLE = '''G90
+G92 X0 Y0 Z0
 '''
 
-# *****************************************************************************
-# * Internal global variables                                                 *
-# *****************************************************************************
-MOTION_COMMANDS = ['G0', 'G00', 'G1', 'G01', 'G2', 'G02', 'G3', 'G03']
-RAPID_MOVES = ['G0', 'G00']  # Rapid moves gcode commands definition
-SUPPRESS_COMMANDS = ['']  # These commands are ignored by commenting them out
-COMMAND_SPACE = ' '
-# Global variables storing current position (Use None for safety.)
-CURRENT_X = None
-CURRENT_Y = None
-CURRENT_Z = None
+#Postamble text will appear following the last operation.
+POSTAMBLE = '''
+G0 Z20
+M5
+G0 X0 Y0 F''' + format(G0XY_FEEDRATE, 'd') + '''
+G0 Z5
+; M2
+'''
+#Marlin is primarily for 3d printing, the output from freeCAD for cnc router work is rather limited
+#Add more as support exists, tool changes maybe
+
+ALLOWED_COMMANDS = ['G0', 'G1', 'G2', 'G3', 'G5', 'G20', 'G21', 'G90', 'G91', 'G92', 'M0']
+
+# These commands are ignored by commenting them out
+# SUPPRESS_COMMANDS = [ 'G98', 'G80' ]
+
+#Pre operation text will be inserted before every operation
+PRE_OPERATION = ''''''
+
+#Post operation text will be inserted after every operation
+POST_OPERATION = ''''''
+
+#Tool Change commands will be inserted before a tool change
+TOOL_CHANGE = ''''''
+SUPPRESS_TOOL_CHANGE=0
+ASSUME_FIRST_TOOL = True
+
+CENTER_ORIGIN_X = False
+CENTER_ORIGIN_Y = False
+CENTER_OFF = False
+
+SWAP_XY = False
+INVERT_X = False
+INVERT_Y = False
+OFFSET_X = 0.0
+OFFSET_Y = 0.0
+
+SPINDLE_CONTROL = False
+
+# to distinguish python built-in open function from the one declared below
+if open.__module__ in ['__builtin__','io']:
+    pythonopen = open
 
 
 def processArguments(argstring):
     global OUTPUT_HEADER
     global OUTPUT_COMMENTS
-    global OUTPUT_FINISH
-    global OUTPUT_PATH
-    global OUTPUT_MARLIN_CONFIG
     global OUTPUT_LINE_NUMBERS
+    global OUTPUT_TOOL_CHANGE
     global SHOW_EDITOR
+    global PRECISION
     global PREAMBLE
     global POSTAMBLE
-    global UNITS
-    global UNIT_FEED_FORMAT
-    global UNIT_FORMAT
-    global TRANSLATE_DRILL_CYCLES
-    global OUTPUT_TOOL_CHANGE
-    global SPINDLE_WAIT
-    global RETURN_TO
-    global OUTPUT_BCNC
-    global PRECISION
+    global SUPPRESS_TOOL_CHANGE
+    global CENTER_OFF
+    global CENTER_ORIGIN_X
+    global CENTER_ORIGIN_Y
+    global SWAP_XY
+    global INVERT_X
+    global INVERT_Y
+    global OFFSET_X
+    global OFFSET_Y
+    global SPINDLE_CONTROL
 
     try:
         args = parser.parse_args(shlex.split(argstring))
@@ -258,18 +166,6 @@ def processArguments(argstring):
             OUTPUT_COMMENTS = False
         if args.comments:
             OUTPUT_COMMENTS = True
-        if args.no_finish_comments:
-            OUTPUT_FINISH = False
-        if args.finish_comments:
-            OUTPUT_FINISH = True
-        if args.no_path_comments:
-            OUTPUT_PATH = False
-        if args.path_comments:
-            OUTPUT_PATH = True
-        if args.no_marlin_config:
-            OUTPUT_MARLIN_CONFIG = False
-        if args.marlin_config:
-            OUTPUT_MARLIN_CONFIG = True
         if args.no_line_numbers:
             OUTPUT_LINE_NUMBERS = False
         if args.line_numbers:
@@ -278,186 +174,160 @@ def processArguments(argstring):
             SHOW_EDITOR = False
         if args.show_editor:
             SHOW_EDITOR = True
-        if args.preamble is not None:
-            PREAMBLE = args.preamble
-        if args.postamble is not None:
-            POSTAMBLE = args.postamble
-        if args.no_translate_drill:
-            TRANSLATE_DRILL_CYCLES = False
-        if args.translate_drill:
-            TRANSLATE_DRILL_CYCLES = True
-        if args.tool_change:
-            OUTPUT_TOOL_CHANGE = True
-        if args.return_to:
-            RETURN_TO = args.return_to
-            if RETURN_TO.find(',') == -1:
-                RETURN_TO = None
-                print('--return-to coordinates must be specified as:')
-                print('--return-to "x.n,y.n,z.n"')
-        if args.bcnc:
-            OUTPUT_BCNC = True
-        if args.no_bcnc:
-            OUTPUT_BCNC = False
-        SPINDLE_WAIT = args.wait_for_spindle
+        
+        print("Show editor = %d" % SHOW_EDITOR)
         PRECISION = args.precision
-
+        
+        if not args.preamble is None:
+            PREAMBLE = args.preamble
+        if not args.postamble is None:
+            POSTAMBLE = args.postamble
+        if not args.tool_change is None:
+            OUTPUT_TOOL_CHANGE = int(args.tool_change) > 0
+            SUPPRESS_TOOL_CHANGE = min(1, int(args.tool_change) - 1)
+        if args.swapxy:
+            SWAP_XY = True
+        if args.invertx:
+            INVERT_X = True
+        if args.inverty:
+            INVERT_Y = True
+        if not args.offsetx is None:
+            OFFSET_X = float(args.offsetx)
+        if not args.offsety is None:
+            OFFSET_Y = float(args.offsety)
+        if args.centerorigin:
+            CENTER_ORIGIN_X = True
+            CENTER_ORIGIN_Y = True
+        else:
+            if args.centeroriginal:
+                CENTER_OFF = True
+                print("Center OFf")
+            else:
+                if args.centeroriginx:
+                    CENTER_ORIGIN_X = not SWAP_XY
+                if args.centeroriginy:
+                    CENTER_ORIGIN_Y = not SWAP_XY
+        if args.spindlecontrol:
+            SPINDLE_CONTROL = True
+            
     except Exception as e:
+        traceback.print_exc(e)
         return False
 
     return True
 
-
-# For debug...
-def dump(obj):
-    for attr in dir(obj):
-        try:
-            if attr.startswith('__'):
-                continue
-            print('>' + attr + '<')
-            attr_text = "%s = %s" % (attr, getattr(obj, attr))
-            if attr in ['HorizFeed', 'VertFeed']:
-                print('==============\n', attr_text)
-                if 'mm/s' in attr_text:
-                    print('===> metric values <===')
-        except:  # Insignificant errors
-            # print('==>', obj, attr)
-            pass
-
-
-def export(objectslist, filename, argstring):
+def export(objectslist,filename,argstring):
     if not processArguments(argstring):
         return None
 
     global UNITS
-    global UNIT_FORMAT
-    global UNIT_FEED_FORMAT
-    global MOTION_MODE
-    global SUPPRESS_COMMANDS
-
-    print('Post Processor: ' + __name__ + ' postprocessing...')
-    gcode = ''
-
-    # Write header:
-    if OUTPUT_HEADER:
-        gcode += linenumber() + '(Exported by FreeCAD)\n'
-        gcode += linenumber() + '(Post Processor: ' + __name__
-        gcode += '.py, version: ' + Revised + ')\n'
-        gcode += linenumber() + '(Output Time:' + str(datetime.now()) + ')\n'
-
-    # Suppress drill-cycle commands:
-    if TRANSLATE_DRILL_CYCLES:
-        SUPPRESS_COMMANDS += ['G80', 'G98', 'G99']
-
-    # Write the preamble:
-    if OUTPUT_COMMENTS:
-        gcode += linenumber() + '(Begin preamble)\n'
-    for line in PREAMBLE.splitlines(True):
-        gcode += linenumber() + line
-
-    # Write these settings AFTER the preamble,
-    # to prevent the preamble from changing these:
-    if OUTPUT_COMMENTS:
-        gcode += linenumber() + '(Default Configuration)\n'
-    gcode += linenumber() + MOTION_MODE + '\n'
-    gcode += linenumber() + UNITS + '\n'
-    gcode += linenumber() + WORK_PLANE + '\n'
 
     for obj in objectslist:
-        # Debug...
-        # print('\n' + '*'*70 + '\n')
-        # dump(obj)
-        # print('\n' + '*'*70 + '\n')
-        if not hasattr(obj, 'Path'):
-            print('The object ' + obj.Name +
-                  ' is not a path. Please select only path and Compounds.')
+        if not hasattr(obj,"Path"):
+            print("the object " + obj.Name + " is not a path. Please select only path and Compounds.")
             return
+            
+    if SPINDLE_CONTROL:
+       ALLOWED_COMMANDS.extend(['M3', 'M4', 'M5'])
+       
+    print("postprocessing...")
+    gcode = ""
 
-        # Skip inactive operations:
-        if PathUtil.opProperty(obj, 'Active') is False:
-            continue
+    #Find the machine.
+    #The user my have overridden post processor defaults in the GUI.  Make sure we're using the current values in the Machine Def.
+    myMachine = None
+    for pathobj in objectslist:
+        if hasattr(pathobj,"Group"): #We have a compound or project.
+            for p in pathobj.Group:
+                if p.Name == "Machine":
+                    myMachine = p
+    if myMachine is None:
+        print("No machine found in this project")
+    else:
+        if myMachine.MachineUnits == "Metric":
+           UNITS = "G21"
+        else:
+           UNITS = "G20"
 
-        # Do the pre_op:
-        if OUTPUT_BCNC:
-            gcode += linenumber() + '(Block-name: ' + obj.Label + ')\n'
-            gcode += linenumber() + '(Block-expand: 0)\n'
-            gcode += linenumber() + '(Block-enable: 1)\n'
-        if OUTPUT_COMMENTS:
-            gcode += linenumber() + '(Begin operation: ' + obj.Label + ')\n'
+
+    # write header
+    if OUTPUT_HEADER:
+        gcode += linenumber() + ";Exported by FreeCAD\n"
+        gcode += linenumber() + ";Post Processor: " + __name__ +"\n"
+        gcode += linenumber() + ";Output Time:"+str(now)+"\n"
+
+    #Write the preamble
+    if OUTPUT_COMMENTS: gcode += linenumber() + ";Begin preamble\n"
+    for line in PREAMBLE.splitlines(True):
+        gcode += linenumber() + line
+    gcode += linenumber() + UNITS + "\n;End preamble\n\n"
+    
+    data_stats = {"Xmin":10000, "Xmax":0,
+                  "Ymin":10000, "Ymax":0,
+                  "Zmin":10000, "Zmax":0,
+                  "Xmin'":10000, "Xmax'":0,
+                  "Ymin'":10000, "Ymax'":0,
+                  "Zmin'":10000, "Zmax'":0}
+    
+    gcodebody = ""
+    
+    for obj in objectslist:
+         parse(obj, data_stats, True)
+    
+    for obj in objectslist:
+
+        #do the pre_op
+        if OUTPUT_COMMENTS: gcodebody += linenumber() + ";Begin operation: " + obj.Label + "\n"
         for line in PRE_OPERATION.splitlines(True):
-            gcode += linenumber() + line
+            gcodebody += linenumber() + line
 
-        # Get coolant mode:
-        coolantMode = 'None'  # None is the word returned from the operation
-        if hasattr(obj, 'CoolantMode') or hasattr(obj, 'Base') and \
-           hasattr(obj.Base, 'CoolantMode'):
-            if hasattr(obj, 'CoolantMode'):
-                coolantMode = obj.CoolantMode
-            else:
-                coolantMode = obj.Base.CoolantMode
+        gcodebody += parse(obj, data_stats, False)
 
-        # Turn coolant on if required:
-        if OUTPUT_COMMENTS:
-            if not coolantMode == 'None':
-                gcode += linenumber() + '(Coolant On:' + coolantMode + ')\n'
-        if coolantMode == 'Flood':
-            gcode += linenumber() + 'M8\n'
-        if coolantMode == 'Mist':
-            gcode += linenumber() + 'M7\n'
-
-        # Parse the op:
-        gcode += parse(obj)
-
-        # Do the post_op:
-        if OUTPUT_COMMENTS and OUTPUT_FINISH:
-            gcode += linenumber() + '(Finish operation: ' + obj.Label + ')\n'
+        #do the post_op
+        if OUTPUT_COMMENTS: gcodebody += linenumber() + ";finish operation: " + obj.Label + "\n"
+        
         for line in POST_OPERATION.splitlines(True):
-            gcode += linenumber() + line
-
-        # Turn coolant off if previously enabled:
-        if not coolantMode == 'None':
-            if OUTPUT_COMMENTS:
-                gcode += linenumber() + '(Coolant Off:' + coolantMode + ')\n'
-            gcode += linenumber() + 'M9\n'
-
-    # Do the post_amble:
-    if OUTPUT_BCNC:
-        gcode += linenumber() + '(Block-name: post_amble)\n'
-        gcode += linenumber() + '(Block-expand: 0)\n'
-        gcode += linenumber() + '(Block-enable: 1)\n'
+            gcodebody += linenumber() + line
+    
+    precision_string = '.' + str(PRECISION) +'f'
+     
     if OUTPUT_COMMENTS:
-        gcode += linenumber() + '(Begin postamble)\n'
+        wassup = 'Origin: ' + ('Original' if CENTER_OFF else 'Bottom Left' if not (CENTER_ORIGIN_X or CENTER_ORIGIN_Y) else 'Centered') + (' (Swap X and Y)' if SWAP_XY else '') + ('\n;' + ('x offset: ' + format(OFFSET_X, '0.2f')) if OFFSET_X > 0 else '') + ('\n;' + ('y offset: ' + format(OFFSET_Y, '0.2f')) if OFFSET_Y > 0 else '')
+        print(wassup);
+        
+        gcode += ';' + wassup + '\n'
+        
+        for key in data_stats:
+            if len(key) == 4:
+                tkey = key
+                if SWAP_XY:
+                    if tkey[0] == 'X': tkey = 'Y' + tkey[1:4]
+                    elif tkey[0] == 'Y': tkey= 'X' + tkey[1:4]
+                wassup = tkey + ' is ' +  format(data_stats[key], precision_string) + ' ==> ' + format(data_stats[key+"'"], precision_string)
+                print(wassup)
+                gcode += ";" + wassup + '\n'
+            else:
+                break
+               
+    if OUTPUT_COMMENTS: gcode += '\n;GCode Commands detected:\n\n'
+    
+    if OUTPUT_COMMENTS:
+        for key in data_stats:
+            if len(key) < 4:
+                nottoolate = key + ' detected, count is ' +  str(data_stats[key])
+                print(nottoolate)
+                gcode += ";" + nottoolate + "\n"
+    
+    gcode += '\n'
+    gcode += gcodebody
+    gcodebody = ''
+        
+    #do the post_amble
+
+    if OUTPUT_COMMENTS: gcode += ";Begin postamble\n"
     for line in POSTAMBLE.splitlines(True):
         gcode += linenumber() + line
 
-    # Optionally add a final XYZ position to the end of the gcode:
-    if RETURN_TO:
-        first_comma = RETURN_TO.find(',')
-        last_comma = RETURN_TO.rfind(',')  # == first_comma if only one comma
-        ref_X = ' X' + RETURN_TO[0: first_comma].strip()
-
-        # Z is optional:
-        if last_comma != first_comma:
-            ref_Z = ' Z' + RETURN_TO[last_comma + 1:].strip()
-            ref_Y = ' Y' + RETURN_TO[first_comma + 1:last_comma].strip()
-        else:
-            ref_Z = ''
-            ref_Y = ' Y' + RETURN_TO[first_comma + 1:].strip()
-
-        gcode += linenumber() + 'G0' + ref_X + ref_Y + ref_Z + '\n'
-
-    # Optionally add recommended Marlin 2.x configuration to gcode file:
-    if OUTPUT_MARLIN_CONFIG:
-        gcode += linenumber() + '(Marlin 2.x Configuration)\n'
-        gcode += linenumber() + '(The following should be enabled in)\n'
-        gcode += linenumber() + '(the configuration files of Marlin 2.x)\n'
-        gcode += linenumber() + '(#define ARC_SUPPORT)\n'
-        gcode += linenumber() + '(#define CNC_COORDINATE_SYSTEMS)\n'
-        gcode += linenumber() + '(#define PAREN_COMMENTS)\n'
-        gcode += linenumber() + '(#define GCODE_MOTION_MODES)\n'
-        gcode += linenumber() + '(#define G0_FEEDRATE)\n'
-        gcode += linenumber() + '(define VARIABLE_G0_FEEDRATE)\n'
-
-    # Show the gcode result dialog:
     if FreeCAD.GuiUp and SHOW_EDITOR:
         dia = PostUtils.GCodeEditorDialog()
         dia.editor.setText(gcode)
@@ -469,302 +339,230 @@ def export(objectslist, filename, argstring):
     else:
         final = gcode
 
-    print('Done postprocessing.')
+    print("done postprocessing.")
 
-    # Write the file:
-    with open(filename, 'w') as fp:
-        fp.write(final)
+    gfile = pythonopen(filename,"w")
+    gfile.write(gcode)
+    gfile.close()
 
 
 def linenumber():
-    if not OUTPUT_LINE_NUMBERS:
-        return ''
     global LINENR
-    global LINEINCR
-    LINENR += LINEINCR
-    return 'N' + str(LINENR) + ' '
+    if OUTPUT_LINE_NUMBERS == True:
+        LINENR += 10
+        return "N" + str(LINENR) + " "
+    return ""
 
+def tallycmds(data_stats, command):
+    if not command.startswith("("):
+        if command in data_stats:
+            data_stats[command] = data_stats[command] + 1
+        else:
+            data_stats[command] = 1
+    return 0
+    
+def boxlimits(data_stats, cmd, param, value, checkbounds):
+    # param is upper always
+    
+    if (INVERT_X and param == 'X') or (INVERT_Y and param == 'Y'):
+        value = -value
+        
+    if checkbounds:
+        if data_stats[param + "min"] > value:
+            data_stats[param + "min"] = value
+        if data_stats[param + "max"] < value:
+            data_stats[param + "max"] = value
+    else:
+            
+        if param == 'Z':
+           value -= (data_stats[param + "max"] - 5)
+        else:
+            if not CENTER_OFF:
+               if (CENTER_ORIGIN_X and param =='X') or (CENTER_ORIGIN_Y and param =='Y'):
+                   value -=  ((data_stats[param + "max"] + data_stats[param + "min"]) / 2.0)
+               else:
+                   value -= data_stats[param + "min"]
+        
+        if param == 'X': value += OFFSET_X
+        if param == 'Y': value += OFFSET_Y
+        
+        if data_stats[param + "min'"] > value:
+            data_stats[param + "min'"] = value
+        if data_stats[param + "max'"] < value:
+            data_stats[param + "max'"] = value
+                   
+    return value
 
-def format_outlist(strTable):
-    # construct the line for the final output
-    global COMMAND_SPACE
-    s = ''
-    for w in strTable:
-        s += w + COMMAND_SPACE
-    return s.strip()
+def emuldrill(c, state): #G81
+    
+    cmdlist =  [["G0", {'X' : c.Parameters['X'], 'Y' : c.Parameters['Y'], 'z' : 5}],
+                ["G1", {'X' : c.Parameters['X'], 'Y' : c.Parameters['Y'], 'z' : -5, 'F' : G0Z_DOWN_FEEDRATE / 60}],
+                ["G1", {'X' : c.Parameters['X'], 'Y' : c.Parameters['Y'], 'z' : 0, 'F' : G0Z_UP_FEEDRATE / 60}],
+                ["G1", {'X' : c.Parameters['X'], 'Y' : c.Parameters['Y'], 'Z' : c.Parameters['Z'], 'F' : G0Z_DOWN_FEEDRATE / 60}],
+                ["G0", {'X' : c.Parameters['X'], 'Y' : c.Parameters['Y'], 'z' : 5,  'F' : G0Z_UP_FEEDRATE /60}]
+    ]
+    
+    return iter(cmdlist)
+    
+def emultoolchange(c, state): #M6 T?
+    #print(state['notoolyet'])
+    if ASSUME_FIRST_TOOL and state['notoolyet'] and state['output']:
+        state['notoolyet'] = False
+        cmdlist =  [
+                    [";assumed starting tool", {'T' : c.Parameters['T']}]
+        ]
+    else:
+        cmdlist =  [["G0", {'z' : 20, 'F': G0Z_UP_FEEDRATE / 60.0}],
+                    ["G0", {'x' : 0, 'y' : 0, 'F' : G0XY_FEEDRATE / 60.0}],
+                    ["M5" if SPINDLE_CONTROL else ";M5", {}],
+                    ["M0", {'T': c.Parameters['T']}], # Pause and wait for click, turn off spindle, swap bit, home it, turn on spindle
+                    ["G92", {'z' : 0}],
+                    ["G0", {'z' : 20, 'F': G0Z_UP_FEEDRATE / 60.0}],
+                    ["G0", {'x' : state['lastx'], 'y': state['lasty'], 'F': G0XY_FEEDRATE / 60.0}],
+                    ["M3" if SPINDLE_CONTROL else ";M3", {'S' : state['lasts']}]
+        ]
+    
+    return iter(cmdlist)
+    
+class Commands:
+    tobe = {'G81': emuldrill, 'M6' : emultoolchange}
+    state = {'output': False, 'notoolyet': True, 'lastz' : 100, 'lastx' : 0, 'lasty' : 0, 'lastf' : G0Z_DOWN_FEEDRATE, 'lasts' : 0}
+             
+    def __init__(self, pathobj = None, output = False):
+        self.paths = iter(pathobj.Path.Commands)
+        Commands.state['output'] = output
+        self.epath = None
 
+    def __iter__(self):
+        return self
 
-def parse(pathobj):
-    global DRILL_RETRACT_MODE
-    global MOTION_MODE
-    global CURRENT_X
-    global CURRENT_Y
-    global CURRENT_Z
+    def __next__(self):
+        res = None
+        
+        if self.epath != None:
+            try:
+                res = next(self.epath)
+                #print ("macro line " + res[0])
+            
+            except:
+                self.epath = None
+                res = None
 
-    out = ''
+        if res == None:
+            item = next(self.paths)
+            command = item.Name
+            params = item.Parameters
+                           
+            #print (command)
+            
+            if command in Commands.tobe:
+                func = Commands.tobe[command]
+                self.epath = func(item, Commands.state)
+            elif Commands.state['output']:
+                if command == 'G0':
+                    if 'Z' in params:
+                        params['F'] = (G0Z_UP_FEEDRATE if params['Z'] > Commands.state['lastz'] else G0Z_DOWN_FEEDRATE if params['Z'] < Commands.state['lastz'] else G0XY_FEEDRATE) / 60.0
+                        #print ('lastz ' + format(Commands.state['lastz'], '0.2f') + ' currentZ ' + format(params['Z'], '0.2f') + ' G0 ' + format(params['F'] * 60.0, '0.2f') if 'F' in params else 'wtf')
+                    else:
+                        params['F'] = G0XY_FEEDRATE / 60.0
+                        #print ('G0 F' + format(params['F'] * 60.0, '0.2f') if 'F' in params else 'wtf')
+    
+                if 'X' in params: Commands.state['lastx'] = params['X']
+                if 'Y' in params: Commands.state['lasty'] = params['Y']
+                if 'Z' in params: Commands.state['lastz'] = params['Z']
+                if 'F' in params: Commands.state['lastf'] = params['F']
+                if 'S' in params: Commands.state['lasts'] = params['S']
+                
+            res = [command, params]
+            
+        return res
+
+def parse(pathobj, data_stats, checkbounds):
+    out = ""
     lastcommand = None
-    precision_string = '.' + str(PRECISION) + 'f'
+    precision_string = '.' + str(PRECISION) +'f'
+    global SUPPRESS_TOOL_CHANGE
 
-    params = ['X', 'Y', 'Z', 'A', 'B', 'C', 'U', 'V', 'W', 'I', 'J', 'K', 'F',
-              'S', 'T', 'Q', 'R', 'L', 'P']
+    #params = ['X','Y','Z','A','B','I','J','K','F','S'] #This list control the order of parameters
+    params = ['X', 'x', 'Y', 'y', 'Z','z','A','B','I','J','F','S','T','Q','R','L'] #linuxcnc doesn't want K properties on XY plane  Arcs need work.
 
-    if hasattr(pathobj, 'Group'):  # We have a compound or project.
-        if OUTPUT_COMMENTS:
-            out += linenumber() + '(Compound: ' + pathobj.Label + ')\n'
+    if hasattr(pathobj,"Group"): #We have a compound or project.
+        if OUTPUT_COMMENTS: out += linenumber() + ";compound: " + pathobj.Label + "\n"
         for p in pathobj.Group:
-            out += parse(p)
+            out += parse(p, data_stats, checkbounds)
         return out
+    else: #parsing simple path
 
-    else:  # Parsing simple path
-        # groups might contain non-path things like stock.
-        if not hasattr(pathobj, 'Path'):
+        if not hasattr(pathobj,"Path"): #groups might contain non-path things like stock.
             return out
 
-        if OUTPUT_COMMENTS and OUTPUT_PATH:
-            out += linenumber() + '(Path: ' + pathobj.Label + ')\n'
-
-        for c in pathobj.Path.Commands:
-            outlist = []
-            command = c.Name
-            outlist.append(command)
-            # Debug:
-            # print('pathobj.Path.Commands:', c)
-
-            # If modal is True, delete duplicate commands:
-            if MODAL:
+        if OUTPUT_COMMENTS: out += linenumber() + ";Path: " + pathobj.Label + "\n"
+        
+        for command, Parameters in Commands(pathobj, not checkbounds):
+            outstring = []
+            
+            if not checkbounds:
+                tallycmds(data_stats, command)
+                           
+            outstring.append(command)
+            # if modal: only print the command if it is not the same as the last one
+            if MODAL == True:
                 if command == lastcommand:
-                    outlist.pop(0)
-
-            # Add the remaining parameters in order:
+                    outstring.pop(0)
+                
+            # Now add the remaining parameters in order
             for param in params:
-                if param in c.Parameters:
+                if param in Parameters:
                     if param == 'F':
-                        if command not in RAPID_MOVES:
-                            feedRate = Units.Quantity(
-                                c.Parameters['F'], FreeCAD.Units.Velocity)
-                            if feedRate.getValueAs(UNIT_FEED_FORMAT) > 0.0:
-                                outlist.append(param + format(float(
-                                    feedRate.getValueAs(UNIT_FEED_FORMAT)),
-                                    precision_string))
-                    elif param in ['T', 'H', 'D', 'S', 'P', 'L']:
-                        outlist.append(param + str(c.Parameters[param]))
-                    elif param in ['A', 'B', 'C']:
-                        outlist.append(param + format(
-                            c.Parameters[param], precision_string))
-                    # [X, Y, Z, U, V, W, I, J, K, R, Q]
+                        if not checkbounds:
+                            outstring.append(param + format(Parameters[param] * 60, '.2f'))
+                    elif param == 'T':
+                        outstring.append(param + str(int(Parameters['T'])))
                     else:
-                        pos = Units.Quantity(
-                            c.Parameters[param], FreeCAD.Units.Length)
-                        outlist.append(param + format(float(
-                            pos.getValueAs(UNIT_FORMAT)), precision_string))
+                        value = Parameters[param]
+                        if param in ['X', 'Y', 'Z']:
+                            value = boxlimits(data_stats, command, param, value, checkbounds)
+                            
+                        if SWAP_XY:
+                            if param.upper() == 'X': param = 'Y'
+                            elif param.upper() == 'Y': param = 'X'
+                            
+                        outstring.append(param.upper() + format(value, precision_string))
 
-            # Store the latest command:
+            # store the latest command
             lastcommand = command
 
-            # Capture the current position for subsequent calculations:
-            if command in MOTION_COMMANDS:
-                if 'X' in c.Parameters:
-                    CURRENT_X = Units.Quantity(
-                        c.Parameters['X'], FreeCAD.Units.Length)
-                if 'Y' in c.Parameters:
-                    CURRENT_Y = Units.Quantity(
-                        c.Parameters['Y'], FreeCAD.Units.Length)
-                if 'Z' in c.Parameters:
-                    CURRENT_Z = Units.Quantity(
-                        c.Parameters['Z'], FreeCAD.Units.Length)
-
-            if command in ('G98', 'G99'):
-                DRILL_RETRACT_MODE = command
-
-            if TRANSLATE_DRILL_CYCLES:
-                if command in ('G81', 'G82', 'G83'):
-                    out += drill_translate(outlist, command, c.Parameters)
-                    # Erase the line just translated:
-                    outlist = []
-
-            if SPINDLE_WAIT > 0:
-                if command in ('M3', 'M03', 'M4', 'M04'):
-                    out += linenumber() + format_outlist(outlist) + '\n'
-                    # Marlin: P for milliseconds, S for seconds, change P to S
-                    out += linenumber()
-                    out += format_outlist(['G4', 'S%s' % SPINDLE_WAIT])
-                    out += '\n'
-                    outlist = []
-
             # Check for Tool Change:
-            if command in ('M6', 'M06'):
+            if command == 'M6':
                 if OUTPUT_COMMENTS:
-                    out += linenumber() + '(Begin toolchange)\n'
-                if OUTPUT_TOOL_CHANGE:
+                    out += linenumber() + ";Begin toolchange\n"
+                if not OUTPUT_TOOL_CHANGE or SUPPRESS_TOOL_CHANGE > 0:
+                    outstring.insert(0, ";")
+                    SUPPRESS_TOOL_CHANGE = SUPPRESS_TOOL_CHANGE - 1
+                else:
                     for line in TOOL_CHANGE.splitlines(True):
                         out += linenumber() + line
-                if not OUTPUT_TOOL_CHANGE and OUTPUT_COMMENTS:
-                    outlist[0] = '(' + outlist[0]
-                    outlist[-1] = outlist[-1] + ')'
-                if not OUTPUT_TOOL_CHANGE and not OUTPUT_COMMENTS:
-                    outlist = []
 
-            if command == 'message':
-                if OUTPUT_COMMENTS:
-                    outlist.pop(0)  # remove the command
-                else:
+            if command == "message":
+                if OUTPUT_COMMENTS == False:
                     out = []
+                else:
+                    outstring.pop(0) #remove the command
 
-            if command in SUPPRESS_COMMANDS:
-                outlist[0] = '(' + outlist[0]
-                outlist[-1] = outlist[-1] + ')'
+            if not command in ALLOWED_COMMANDS:
+                outstring.insert(0, ";")
 
-            # Remove embedded comments:
-            if not OUTPUT_COMMENTS:
-                tmplist = []
-                list_index = 0
-                while list_index < len(outlist):
-                    left_index = outlist[list_index].find('(')
-                    if left_index == -1:  # Not a comment
-                        tmplist.append(outlist[list_index])
-                    else:  # This line contains a comment, and possibly more
-                        right_index = outlist[list_index].find(')')
-                        comment_area = outlist[list_index][
-                            left_index: right_index + 1]
-                        line_minus_comment = outlist[list_index].replace(
-                            comment_area, '').strip()
-                        if line_minus_comment:
-                            # Line contained more than just a comment
-                            tmplist.append(line_minus_comment)
-                    list_index += 1
-                # Done removing comments
-                outlist = tmplist
+            #prepEnd a line number and append a newline
+            if len(outstring) >= 1:
+                if OUTPUT_LINE_NUMBERS:
+                    outstring.insert(0,(linenumber()))
 
-            # Prepend a line number and append a newline
-            if len(outlist) >= 1:
-                out += linenumber() + format_outlist(outlist) + '\n'
+                #append the line to the final output
+                for w in outstring:
+                    out += w + COMMAND_SPACE
+                out = out.strip() + "\n"
 
-    return out
+        return out
 
 
-# *****************************************************************************
-# * As of Marlin 2.0.7.bugfix, canned drill cycles do not exist.              *
-# * The following code converts FreeCAD's canned drill cycles into            *
-# * gcode that Marlin can use.                                                *
-# *****************************************************************************
-def drill_translate(outlist, cmd, params):
-    global DRILL_RETRACT_MODE
-    global MOTION_MODE
-    global CURRENT_X
-    global CURRENT_Y
-    global CURRENT_Z
-    global UNITS
-    global UNIT_FORMAT
-    global UNIT_FEED_FORMAT
-
-    class Drill:  # Using a class is necessary for the nested functions.
-        gcode = ''
-
-    strFormat = '.' + str(PRECISION) + 'f'
-
-    if OUTPUT_COMMENTS:  # Comment the original command
-        outlist[0] = '(' + outlist[0]
-        outlist[-1] = outlist[-1] + ')'
-        Drill.gcode += linenumber() + format_outlist(outlist) + '\n'
-
-    # Cycle conversion only converts the cycles in the XY plane (G17).
-    # --> ZX (G18) and YZ (G19) planes produce false gcode.
-    drill_X = Units.Quantity(params['X'], FreeCAD.Units.Length)
-    drill_Y = Units.Quantity(params['Y'], FreeCAD.Units.Length)
-    drill_Z = Units.Quantity(params['Z'], FreeCAD.Units.Length)
-    drill_R = Units.Quantity(params['R'], FreeCAD.Units.Length)
-    drill_F = Units.Quantity(params['F'], FreeCAD.Units.Velocity)
-    if cmd == 'G82':
-        drill_DwellTime = params['P']
-    elif cmd == 'G83':
-        drill_Step = Units.Quantity(params['Q'], FreeCAD.Units.Length)
-
-    # R less than Z is error
-    if drill_R < drill_Z:
-        Drill.gcode += linenumber() + '(drill cycle error: R less than Z )\n'
-        return Drill.gcode
-
-    # Z height to retract to when drill cycle is done:
-    if DRILL_RETRACT_MODE == 'G98' and CURRENT_Z > drill_R:
-        RETRACT_Z = CURRENT_Z
-    else:
-        RETRACT_Z = drill_R
-
-    # Z motion nested functions:
-    def rapid_Z_to(new_Z):
-        Drill.gcode += linenumber() + 'G0 Z'
-        Drill.gcode += format(
-            float(new_Z.getValueAs(UNIT_FORMAT)), strFormat) + '\n'
-
-    def feed_Z_to(new_Z):
-        Drill.gcode += linenumber() + 'G1 Z'
-        Drill.gcode += format(
-            float(new_Z.getValueAs(UNIT_FORMAT)), strFormat) + ' F'
-        Drill.gcode += format(
-            float(drill_F.getValueAs(UNIT_FEED_FORMAT)), '.2f') + '\n'
-
-    # Make sure that Z is not below RETRACT_Z:
-    if CURRENT_Z < RETRACT_Z:
-        rapid_Z_to(RETRACT_Z)
-
-    # Rapid to hole position XY:
-    Drill.gcode += linenumber() + 'G0 X'
-    Drill.gcode += format(
-        float(drill_X.getValueAs(UNIT_FORMAT)), strFormat) + ' Y'
-    Drill.gcode += format(
-        float(drill_Y.getValueAs(UNIT_FORMAT)), strFormat) + '\n'
-
-    # Rapid to R:
-    rapid_Z_to(drill_R)
-
-    # *************************************************************************
-    # * Drill cycles:                                                         *
-    # * G80 Cancel the drill cycle                                            *
-    # * G81 Drill full depth in one pass                                      *
-    # * G82 Drill full depth in one pass, and pause at the bottom             *
-    # * G83 Drill in pecks, raising the drill to R height after each peck     *
-    # * In preparation for a rapid to the next hole position:                 *
-    # * G98 After the hole has been drilled, retract to the initial Z value   *
-    # * G99 After the hole has been drilled, retract to R height              *
-    # * Select G99 only if safe to move from hole to hole at the R height     *
-    # *************************************************************************
-    if cmd in ('G81', 'G82'):
-        feed_Z_to(drill_Z)  # Drill hole in one step
-        if cmd == 'G82':  # Dwell time delay at the bottom of the hole
-            Drill.gcode += linenumber() + 'G4 S' + str(drill_DwellTime) + '\n'
-            # Marlin uses P for milliseconds, S for seconds, change P to S
-
-    elif cmd == 'G83':  # Peck drill cycle:
-        chip_Space = drill_Step * 0.5
-        next_Stop_Z = drill_R - drill_Step
-        while next_Stop_Z >= drill_Z:
-            feed_Z_to(next_Stop_Z)  # Drill one peck of depth
-
-            # Set next depth, next_Stop_Z is still at the current hole depth
-            if (next_Stop_Z - drill_Step) >= drill_Z:
-                # Rapid up to clear chips:
-                rapid_Z_to(drill_R)
-                # Rapid down to just above last peck depth:
-                rapid_Z_to(next_Stop_Z + chip_Space)
-                # Update next_Stop_Z to next depth:
-                next_Stop_Z -= drill_Step
-            elif next_Stop_Z == drill_Z:
-                break  # Done
-            else:  # More to drill, but less than drill_Step
-                # Rapid up to clear chips:
-                rapid_Z_to(drill_R)
-                # Rapid down to just above last peck depth:
-                rapid_Z_to(next_Stop_Z + chip_Space)
-                # Dril remainder of the hole depth:
-                feed_Z_to(drill_Z)
-                break  # Done
-    rapid_Z_to(RETRACT_Z)  # Done, retract the drill
-
-    return Drill.gcode
-
-
-# print(__name__ + ': GCode postprocessor loaded.')
-
-# PEP8 format passed using: http://pep8online.com/, which primarily covers
-# indentation and line length. Some other aspects of PEP8 which have not
-# been applied yet may be applied in future updates.
+print(__name__ + " gcode postprocessor loaded.")
